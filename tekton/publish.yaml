@@ -2,6 +2,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: publish-release
+  namespace: tekton-pipelines
   annotations:
     chains.tekton.dev/transparency-upload: "true"
 spec:
@@ -43,14 +44,12 @@ spec:
 
   workspaces:
     - name: source
-      description: >-
-        The workspace where the repo has been cloned.
-        Typically /go/src/$(params.package)
+      description: Workspace containing the cloned repo
       mountPath: /go/src/github.com/tektoncd/pipeline
     - name: release-secret
-      description: Secret containing credentials authorized to push to the image registry
+      description: Secret that has credentials to push images & release YAMLs
     - name: output
-      description: The release YAML will be written here
+      description: Workspace where release YAMLs will be written
 
   stepTemplate:
     env:
@@ -73,6 +72,7 @@ spec:
 
   results:
     - name: IMAGES
+      description: List of images built and published (used by Tekton Chains)
 
   steps:
   - name: container-registry-auth
@@ -96,11 +96,9 @@ spec:
     script: |
       #!/bin/sh
       set -ex
-      # Setup docker auth
       DOCKER_CONFIG=~/.docker
       mkdir -p ${DOCKER_CONFIG}
       cp /workspace/docker-config.json ${DOCKER_CONFIG}/config.json
-
       cd ${PROJECT_ROOT}
       cp ${PROJECT_ROOT}/.ko.yaml /workspace/.ko.yaml
 
@@ -114,7 +112,6 @@ spec:
         mcr.microsoft.com/windows/nanoserver:ltsc2019 \
         mcr.microsoft.com/windows/nanoserver:ltsc2022 \
         ${COMBINED_BASE_IMAGE_BASE}/combined-base-image:latest)
-
       sed -i "s|ghcr.io/tektoncd/pipeline/github.com/tektoncd/pipeline/combined-base-image:latest|${COMBINED_BASE_IMAGE}|g" /workspace/.ko.yaml
       cat /workspace/.ko.yaml
 
@@ -130,7 +127,6 @@ spec:
     script: |
       #!/usr/bin/env sh
       set -ex
-
       # Validate KO_DOCKER_REPO
       if [ -z "${KO_DOCKER_REPO}" ] || [ "${KO_DOCKER_REPO}" = "/" ]; then
         if [ -n "${FALLBACK_KO_DOCKER_REPO}" ] && [ "${FALLBACK_KO_DOCKER_REPO}" != "/" ]; then
