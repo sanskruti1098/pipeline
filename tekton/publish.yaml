@@ -9,60 +9,47 @@ spec:
     - name: package
       description: package to release (e.g. github.com/<org>/<project>)
       default: github.com/tektoncd/pipeline
-
     - name: images
       description: List of cmd/* paths to be published as images
       default: "controller webhook entrypoint nop workingdirinit resolvers sidecarlogresults events"
-
     - name: koExtraArgs
       description: Extra args to be passed to ko
       default: "--preserve-import-paths"
-
     - name: versionTag
-      description: The version, vX.Y.Z for stable or vYYYYMMDD-abc1234 for nightly.
-
+      description: The version, vX.Y.Z for stable, vYYYYMMDD-abc1234 for nightly that the artifacts should be tagged with (including `v`).
     - name: imageRegistry
       description: The target image registry
-      default: na.artifactory.swg-devops.com # 
-
+      default: ghcr.io
     - name: imageRegistryPath
       description: The path (project) in the image registry
-      default: sys-linux-power-team-ftp3distro-docker-images-docker-local/tekton #
-
     - name: imageRegistryRegions
       description: The target image registry regions
       default: ""
-
     - name: imageRegistryUser
       description: Username to be used to login to the container registry
       default: "_json_key"
-
     - name: releaseAsLatest
       description: Whether to tag and publish this release as Pipelines latest
       default: "true"
-
     - name: platforms
-      description: Platforms to publish for (e.g. linux/amd64,linux/arm64)
+      description: Platforms to publish for the images (e.g. linux/amd64,linux/arm64)
       default: linux/amd64,linux/arm64,linux/s390x,linux/ppc64le,windows/amd64
-
     - name: serviceAccountPath
-      description: Service account path within the release-secret workspace
-
+      description: The name of the service account path within the release-secret workspace
   workspaces:
     - name: source
-      description: Workspace containing the repo.
+      description: The workspace where the repo has been cloned
       mountPath: /go/src/github.com/tektoncd/pipeline
-
     - name: release-secret
-      description: Secret with credentials to push to registry and output bucket
-
+      description: Secret containing service account authorized to push to imageRegistry and output bucket
     - name: output
-      description: Workspace where release YAML will be written
-
+      description: The release YAML will be written to this workspace
   stepTemplate:
     env:
-      - name: PROJECT_ROOT
+      - name: "PROJECT_ROOT"
         value: "$(workspaces.source.path)"
+      - name: CONTAINER_REGISTRY_CREDENTIALS
+        value: "$(workspaces.release-secret.path)/$(params.serviceAccountPath)"
       - name: CONTAINER_REGISTRY
         value: "$(params.imageRegistry)/$(params.imageRegistryPath)"
       - name: IMAGE_REGISTRY_PATH
@@ -75,58 +62,119 @@ spec:
         value: "$(workspaces.output.path)/$(params.versionTag)"
       - name: KO_EXTRA_ARGS
         value: "$(params.koExtraArgs)"
-
   results:
     - name: IMAGES
 
   steps:
-
+  # --------------------------------------
+  # Step 1: Authenticate to registry
+  # --------------------------------------
   - name: container-registry-auth
     image: cgr.dev/chainguard/crane:latest-dev
     script: |
       #!/bin/sh
       set -ex
-      # Login to the container registry
-      echo "Authenticating to $(params.imageRegistry)"
-      DOCKER_CONFIG=$(cat $(workspaces.release-secret.path)/$(params.serviceAccountPath) | \
-        crane auth login -u $(params.imageRegistryUser) --password-stdin $(params.imageRegistry))
+
+      # Login to registry
+      DOCKER_CONFIG=$(cat ${CONTAINER_REGISTRY_CREDENTIALS} | \
+        crane auth login -u ${CONTAINER_REGISTRY_USER} --password-stdin $(params.imageRegistry) 2>&1 | \
+        sed -n 's,^.*logged in via \(.*\)$,\1,p')
+
+      for region in ${REGIONS}
+      do
+        HOSTNAME=${region}.$(params.imageRegistry)
+        cat ${CONTAINER_REGISTRY_CREDENTIALS} | crane auth login -u ${CONTAINER_REGISTRY_USER} --password-stdin ${HOSTNAME}
+      done
       cp ${DOCKER_CONFIG} /workspace/docker-config.json
 
+  # --------------------------------------
+  # Step 2: Create base ko.yaml
+  # --------------------------------------
   - name: create-ko-yaml
     image: cgr.dev/chainguard/go:latest-dev
     script: |
       #!/bin/sh
       set -ex
-      mkdir -p ~/.docker
-      cp /workspace/docker-config.json ~/.docker/config.json
+      DOCKER_CONFIG=~/.docker
+      mkdir -p ${DOCKER_CONFIG}
+      cp /workspace/docker-config.json ${DOCKER_CONFIG}/config.json
 
       cd ${PROJECT_ROOT}
       cp ${PROJECT_ROOT}/.ko.yaml /workspace/.ko.yaml
 
-      echo "Configured .ko.yaml for $(params.imageRegistry)/$(params.imageRegistryPath)"
+      COMBINED_BASE_IMAGE_BASE=${CONTAINER_REGISTRY}
+      if [[ ! "$(params.package)" == "github.com/${IMAGE_REGISTRY_PATH}" ]]; then
+        COMBINED_BASE_IMAGE_BASE=${COMBINED_BASE_IMAGE_BASE}/${IMAGE_REGISTRY_PATH}
+      fi
+
+      COMBINED_BASE_IMAGE=$(go run ./vendor/github.com/tektoncd/plumbing/cmd/combine/main.go \
+        cgr.dev/chainguard/static@sha256:67a1b00e0134e2b3a614c7198a26f7deed9d11b7acad4d52c79c0cfd47a2eae7 \
+        mcr.microsoft.com/windows/nanoserver:ltsc2019 \
+        mcr.microsoft.com/windows/nanoserver:ltsc2022 \
+        ${COMBINED_BASE_IMAGE_BASE}/combined-base-image:latest)
+
+      sed -i "s|ghcr.io/tektoncd/pipeline/github.com/tektoncd/pipeline/combined-base-image:latest|${COMBINED_BASE_IMAGE}|g" /workspace/.ko.yaml
       cat /workspace/.ko.yaml
 
+  # --------------------------------------
+  # Step 3: Patch ko.yaml dynamically for Artifactory (PPC64LE builds)
+  # --------------------------------------
+  - name: patch-ko-yaml-for-artifactory
+    image: cgr.dev/chainguard/bash:latest
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      echo "🔧 Checking if imageRegistry matches Artifactory..."
+      if echo "$(params.imageRegistry)" | grep -q "na.artifactory.swg-devops.com"; then
+        echo "✅ Detected Artifactory registry — patching .ko.yaml for internal mirror usage."
+        cp /workspace/.ko.yaml /workspace/.ko.yaml.bak
+
+        sed -i 's|ghcr.io/tektoncd/pipeline|na.artifactory.swg-devops.com/artifactory/sys-linux-power-team-ftp3distro-docker-images-docker-local/tekton/mirror|g' /workspace/.ko.yaml
+        sed -i 's|ghcr.io/tektoncd/plumbing|na.artifactory.swg-devops.com/artifactory/sys-linux-power-team-ftp3distro-docker-images-docker-local/tekton/mirror|g' /workspace/.ko.yaml
+        sed -i 's|cgr.dev/chainguard|na.artifactory.swg-devops.com/artifactory/sys-linux-power-team-ftp3distro-docker-images-docker-local/tekton/mirror|g' /workspace/.ko.yaml
+
+        echo "✅ .ko.yaml successfully patched for Artifactory mirror"
+        cat /workspace/.ko.yaml
+      else
+        echo "ℹ️ Non-Artifactory registry detected — skipping patch"
+      fi
+
+  # --------------------------------------
+  # Step 4: Run ko build and publish
+  # --------------------------------------
   - name: run-ko
-    image: ghcr.io/tektoncd/plumbing/ko@sha256:990ec7fc709567e0d26fa40788a040b97598343d2fcb7252751316e34f31c4cc
+    image: ghcr.io/tektoncd/plumbing/ko
     env:
       - name: KO_DOCKER_REPO
-        value: $(params.imageRegistry)/$(params.imageRegistryPath)
-      - name: DOCKER_CONFIG
-        value: /tekton/home/.docker
+        value: "$(params.imageRegistry)/$(params.imageRegistryPath)"
       - name: GOFLAGS
         value: "-mod=vendor"
+      - name: DOCKER_CONFIG
+        value: /tekton/home/.docker
     script: |
-      #!/usr/bin/env sh
+      #!/usr/bin/env bash
       set -ex
-      echo "Running ko publish for $(params.imageRegistry)/$(params.imageRegistryPath)"
+
       git config --global --add safe.directory ${PROJECT_ROOT}
       export KO_CONFIG_PATH=/workspace
+
       mkdir -p ~/.docker
       cp /workspace/docker-config.json ~/.docker/config.json
 
       cd ${PROJECT_ROOT}
+      TMPDIR=$(mktemp -d)
+      tar cfz ${TMPDIR}/source.tar.gz vendor/
+      for d in cmd/*; do
+        if [ -d ${d}/kodata/ ]; then
+          ln -s ${TMPDIR}/source.tar.gz ${d}/kodata/
+        fi
+      done
+
+      mkdir -p $OUTPUT_RELEASE_DIR
       git tag $(params.versionTag)
 
+      echo "🚀 Running ko resolve for $(params.platforms)"
       ko resolve \
         --image-label=org.opencontainers.image.source=https://$(params.package) \
         --platform=$(params.platforms) \
@@ -134,11 +182,32 @@ spec:
         -R ${KO_EXTRA_ARGS} \
         -f ${PROJECT_ROOT}/config/ > $OUTPUT_RELEASE_DIR/release.yaml
 
+      ko resolve \
+        --image-label=org.opencontainers.image.source=https://$(params.package) \
+        --platform=$(params.platforms) \
+        -R ${KO_EXTRA_ARGS} \
+        -f ${PROJECT_ROOT}/config/ > $OUTPUT_RELEASE_DIR/release.notags.yaml
+
+      sed -i -e 's/\(pipeline.tekton.dev\/release\): "devel"/\1: "$(params.versionTag)"/g' \
+             -e 's/\(app.kubernetes.io\/version\): "devel"/\1: "$(params.versionTag)"/g' \
+             -e 's/\(version\): "devel"/\1: "$(params.versionTag)"/g' \
+             ${OUTPUT_RELEASE_DIR}/release.yaml \
+             ${OUTPUT_RELEASE_DIR}/release.notags.yaml
+
+  # --------------------------------------
+  # Step 5: Parse and Tag images (unchanged)
+  # --------------------------------------
   - name: koparse
-    image: ghcr.io/tektoncd/plumbing/koparse:latest
+    image: ghcr.io/tektoncd/plumbing/koparse
     script: |
       set -ex
-      echo "Parsing built images from release.yaml"
+      function find_preserve_import_path() {
+        for arg in $@; do
+          if [[ "$arg" == "--preserve-import-paths" ]]; then return 0; fi
+        done
+        return 1
+      }
+      find_preserve_import_path $(echo $KO_EXTRA_ARGS) && PRESERVE_IMPORT_PATH="--preserve-path" || PRESERVE_IMPORT_PATH="--no-preserve-path"
       for cmd in $(params.images); do
         IMAGES="${IMAGES} $(params.package)/cmd/${cmd}:$(params.versionTag)"
       done
@@ -146,7 +215,8 @@ spec:
         --path $OUTPUT_RELEASE_DIR/release.yaml \
         --base $(params.package) \
         --container-registry ${CONTAINER_REGISTRY} \
-        --images ${IMAGES} > /workspace/built_images
+        --images ${IMAGES} \
+        ${PRESERVE_IMPORT_PATH} > /workspace/built_images
 
   - name: tag-images
     image: cgr.dev/chainguard/crane:latest-dev
@@ -155,7 +225,23 @@ spec:
       set -ex
       mkdir -p ~/.docker
       cp /workspace/docker-config.json ~/.docker/config.json
-      for IMAGE in $(cat /workspace/built_images); do
+      for IMAGE in $(cat /workspace/built_images)
+      do
         IMAGE_WITHOUT_SHA=${IMAGE%%@*}
-        crane cp ${IMAGE} ${IMAGE_WITHOUT_SHA}:latest
+        IMAGE_WITHOUT_SHA_AND_TAG=${IMAGE_WITHOUT_SHA%%:*}
+        IMAGE_WITH_SHA=${IMAGE_WITHOUT_SHA_AND_TAG}@${IMAGE##*@}
+        echo $IMAGE_WITH_SHA, >> $(results.IMAGES.path)
+        if [[ "$(params.releaseAsLatest)" == "true" ]]; then
+          crane cp ${IMAGE_WITH_SHA} ${IMAGE_WITHOUT_SHA_AND_TAG}:latest
+        fi
+        for REGION in ${REGIONS}; do
+          if [[ "$(params.releaseAsLatest)" == "true" ]]; then
+            for TAG in "latest" $(params.versionTag); do
+              crane cp ${IMAGE_WITH_SHA} ${REGION}.${IMAGE_WITHOUT_SHA_AND_TAG}:$TAG
+            done
+          else
+            TAG="$(params.versionTag)"
+            crane cp ${IMAGE_WITH_SHA} ${REGION}.${IMAGE_WITHOUT_SHA_AND_TAG}:$TAG
+          fi
+        done
       done
