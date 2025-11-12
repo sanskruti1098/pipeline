@@ -21,6 +21,7 @@ package test
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -384,8 +385,19 @@ spec:
 func applyV1Beta1Controller(t *testing.T) {
 	t.Helper()
 	t.Log("Creating Wait v1beta1.CustomRun Custom Task Controller...")
+
+	// --- Debug logging section ---
+	t.Logf("DEBUG: Current working dir for ko: %s", betaWaitTaskDir)
+	t.Logf("DEBUG: KO_DOCKER_REPO=%q", os.Getenv("KO_DOCKER_REPO"))
+	t.Logf("DEBUG: DOCKER_CONFIG=%q", os.Getenv("DOCKER_CONFIG"))
+	t.Logf("DEBUG: TEST_RUNTIME_ARCH=%q", os.Getenv("TEST_RUNTIME_ARCH"))
+
 	cmd := exec.Command("ko", "apply", "--platform", "linux/amd64,linux/arm64,linux/s390x,linux/ppc64le", "-f", "./config/controller.yaml")
 	cmd.Dir = betaWaitTaskDir
+
+	// Debug: show what will actually be executed
+	t.Logf("DEBUG: Full ko command: %v (dir=%s)", cmd.Args, cmd.Dir)
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Failed to create Wait Custom Task Controller: %s, Output: %s", err, out)
@@ -410,6 +422,11 @@ func TestWaitCustomTask_V1_PipelineRun(t *testing.T) {
 	c, namespace := setup(ctx, t)
 	knativetest.CleanupOnInterrupt(func() { tearDown(ctx, t, c, namespace) }, t.Logf)
 	defer tearDown(ctx, t, c, namespace)
+
+	// --- Debug environment info before running controller ---
+	t.Logf("DEBUG: Initial KO_DOCKER_REPO=%q", os.Getenv("KO_DOCKER_REPO"))
+	t.Logf("DEBUG: Initial DOCKER_CONFIG=%q", os.Getenv("DOCKER_CONFIG"))
+	t.Logf("DEBUG: Initial TEST_RUNTIME_ARCH=%q", os.Getenv("TEST_RUNTIME_ARCH"))
 
 	// Create a custom task controller
 	applyV1Beta1Controller(t)
