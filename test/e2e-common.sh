@@ -18,8 +18,26 @@
 
 source $(git rev-parse --show-toplevel)/vendor/github.com/tektoncd/plumbing/scripts/e2e-tests.sh
 
+# ------------------------------------------------------------------------------
+# Override go_test_e2e from plumbing
+#
+# The Go race detector is slow and unreliable on ppc64le and causes false
+# failures in timing-sensitive controller e2e tests (e.g. sidecar-logs results).
+# Disable -race only on ppc64le to align with OpenShift and Kubernetes CI.
+# ------------------------------------------------------------------------------
+function go_test_e2e() {
+  local race_flag="-race"
+
+  if [[ "$(go env GOARCH)" == "ppc64le" ]]; then
+    echo "INFO: disabling Go race detector on ppc64le"
+    race_flag=""
+  fi
+
+  go test ${race_flag} -v "$@"
+}
+
 # Run the given five times or until it succeeds.
-# Sleeps 5 seconds after earch retry.
+# Sleeps 5 seconds after each retry.
 # example usage: `with_retries ping fakeserver.com`
 function with_retries() (
   set +eo pipefail
@@ -130,32 +148,20 @@ function patch_pipeline_spire() {
 }
 
 function verify_pipeline_installation() {
-  # Make sure that everything is cleaned up in the current namespace.
   delete_tekton_resources
-
-  # Wait for pods to be running in the namespaces we are deploying to
   wait_until_pods_running tekton-pipelines || fail_test "Tekton Pipeline did not come up"
 }
 
 function verify_resolvers_installation() {
-  # Make sure that everything is cleaned up in the current namespace.
   delete_resolvers_resources
-
-  # Wait for pods to be running in the namespaces we are deploying to
   wait_until_pods_running tekton-pipelines-resolvers || fail_test "Tekton Pipeline Resolvers did not come up"
 }
 
 function verify_log_access_enabled() {
   var=$(kubectl get clusterroles | grep tekton-pipelines-controller-pod-log-access)
-  if [ -z "$var" ]
-  then
-    fail_test "Failed to create clusterrole granting pod/logs access to the tekton controller."
-  fi
+  [ -z "$var" ] && fail_test "Failed to create clusterrole granting pod/logs access."
   var=$(kubectl get clusterrolebindings | grep tekton-pipelines-controller-pod-log-access)
-  if [ -z "$var" ]
-  then
-    fail_test "Failed to create clusterrole binding granting pod/logs access to the tekton controller."
-  fi
+  [ -z "$var" ] && fail_test "Failed to create clusterrolebinding granting pod/logs access."
 }
 
 function uninstall_pipeline_crd() {
