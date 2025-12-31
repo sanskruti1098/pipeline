@@ -88,9 +88,25 @@ func TestLargerResultsSidecarLogs(t *testing.T) {
 			}
 
 			t.Logf("Waiting for PipelineRun %s in namespace %s to complete", prName, namespace)
-			if err := WaitForPipelineRunState(ctx, c, prName, timeout, PipelineRunFailed(prName), "PipelineRunFailed", v1Version); err != nil {
-				t.Fatalf("Error waiting for PipelineRun %s to finish: %s", prName, err)
+			// Wait until PipelineRun has finished AND results are populated.
+			// Sidecar log result propagation is asynchronous.
+			if err := WaitForPipelineRunState(
+				ctx,
+				c,
+				prName,
+				timeout,
+				func(pr *v1.PipelineRun) (bool, error) {
+					if !pr.IsDone() {
+						return false, nil
+					}
+					return len(pr.Status.Results) > 0, nil
+				},
+				"PipelineRunCompletedWithResults",
+				v1Version,
+			); err != nil {
+				t.Fatalf("Error waiting for PipelineRun %s to finish with results: %s", prName, err)
 			}
+
 			cl, _ := c.V1PipelineRunClient.Get(ctx, prName, metav1.GetOptions{})
 			d := cmp.Diff(expectedResolvedPipelineRun, cl,
 				ignoreTypeMeta,
