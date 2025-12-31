@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -88,21 +90,28 @@ func TestLargerResultsSidecarLogs(t *testing.T) {
 			}
 
 			t.Logf("Waiting for PipelineRun %s in namespace %s to complete", prName, namespace)
-			if err := WaitForPipelineRunState(ctx, c, prName, timeout,PipelineRunFailed(prName),"PipelineRunFailed",v1Version); 
-			err != nil {
-				t.Fatalf("Error waiting for PipelineRun %s to finish: %s", prName, err)
-			}
+			if err := WaitForPipelineRunState(ctx, c, prName, timeout,
+				PipelineRunFailed(prName),
+				"PipelineRunFailed",
+				v1Version); err != nil {
+					t.Fatalf("Error waiting for PipelineRun %s to finish: %s", prName, err)
+				}
 
 			// IMPORTANT:
 			// With results-from=sidecar-logs, result propagation is asynchronous.
-			// On slower architectures (ppc64le), results may be populated AFTER failure.
-			if err := WaitForPipelineRunState(ctx, c, prName, timeout,ConditionAccessorFn(func(pr *v1.PipelineRun) (bool, error) {
-					return len(pr.Status.Results) > 0, nil
-			}),
-			"PipelineRunResultsAvailable",
-			v1Version); err != nil {
-				t.Fatalf("Error waiting for PipelineRun %s results: %s", prName, err)
+			// On slower architectures (ppc64le), results may appear AFTER failure.
+			var cl *v1.PipelineRun
+			for i := 0; i < 30; i++ {
+				cl, _ = c.V1PipelineRunClient.Get(ctx, prName, metav1.GetOptions{})
+				if cl != nil && len(cl.Status.Results) > 0 {
+					break
+				}
+				time.Sleep(1 * time.Second)
 			}
+			if cl == nil || len(cl.Status.Results) == 0 {
+				t.Fatalf("PipelineRun %s completed but results were not populated", prName)
+			}
+
 
 			cl, _ := c.V1PipelineRunClient.Get(ctx, prName, metav1.GetOptions{})
 			d := cmp.Diff(expectedResolvedPipelineRun, cl,
