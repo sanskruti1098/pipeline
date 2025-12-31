@@ -113,7 +113,7 @@ func TestLargerResultsSidecarLogs(t *testing.T) {
 			}
 
 
-			cl, _ := c.V1PipelineRunClient.Get(ctx, prName, metav1.GetOptions{})
+			cl, _ = c.V1PipelineRunClient.Get(ctx, prName, metav1.GetOptions{})
 			d := cmp.Diff(expectedResolvedPipelineRun, cl,
 				ignoreTypeMeta,
 				ignoreObjectMeta,
