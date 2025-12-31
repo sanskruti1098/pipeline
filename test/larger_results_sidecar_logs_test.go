@@ -95,16 +95,16 @@ func TestLargerResultsSidecarLogs(t *testing.T) {
 				c,
 				prName,
 				timeout,
-				func(pr *v1.PipelineRun) (bool, error) {
+				PipelineRunConditionFunc(func(pr *v1.PipelineRun) (bool, error) {
 					if !pr.IsDone() {
 						return false, nil
 					}
 					return len(pr.Status.Results) > 0, nil
-				},
+				}),
 				"PipelineRunCompletedWithResults",
 				v1Version,
 			); err != nil {
-				t.Fatalf("Error waiting for PipelineRun %s to finish with results: %s", prName, err)
+				t.Fatalf("Error waiting for PipelineRun %s to finish with results: %v", prName, err)
 			}
 
 			cl, _ := c.V1PipelineRunClient.Get(ctx, prName, metav1.GetOptions{})
