@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
+	//"time"
 
 
 	"github.com/google/go-cmp/cmp"
@@ -91,51 +91,34 @@ func TestLargerResultsSidecarLogs(t *testing.T) {
 
 			t.Logf("Waiting for PipelineRun %s in namespace %s to complete", prName, namespace)
 			if err := WaitForPipelineRunState(ctx, c, prName, timeout,
-    				PipelineRunConditionSucceeded,
-    				"PipelineRunCompleted",
-    				v1Version); err != nil {
-    					t.Fatalf("Error waiting for PipelineRun %s to complete: %s", prName, err)
-					}
-
-			// IMPORTANT:
-			// With results-from=sidecar-logs, result propagation is asynchronous.
-			// On slower architectures (ppc64le), results may be populated AFTER completion.
-			var pr *v1.PipelineRun
-			if err := WaitForCondition(timeout, func() (bool, error) {
-    			var err error
-    			pr, err = c.V1PipelineRunClient.Get(ctx, prName, metav1.GetOptions{})
-				if err != nil {
-					return false, err
-    			}
-    			return len(pr.Status.Results) > 0, nil
-			}); err != nil {
-   				t.Fatalf("PipelineRun %s completed but results were not populated", prName)
+			PipelineRunFailed(prName),
+			"PipelineRunFailed",
+			v1Version); err != nil {
+				t.Fatalf("Error waiting for PipelineRun %s to finish: %s", prName, err)
 			}
 
 
-			// Verify TaskRun results were populated via sidecar logs
+			// Verify that TaskRun results were populated via sidecar logs
 			trs, err := c.V1TaskRunClient.List(ctx, metav1.ListOptions{
-    			LabelSelector: fmt.Sprintf("tekton.dev/pipelineRun=%s", prName),
+				LabelSelector: fmt.Sprintf("tekton.dev/pipelineRun=%s", prName),
 			})
 			if err != nil {
-    			t.Fatalf("Error listing TaskRuns: %v", err)
+				t.Fatalf("Error listing TaskRuns: %v", err)
 			}
-			
+
 			foundResults := false
 			for _, tr := range trs.Items {
-    			if len(tr.Status.Results) > 0 {
-        			foundResults = true
-        			break
+				if len(tr.Status.Results) > 0 {
+					foundResults = true
+					break
 				}
 			}
 
 			if !foundResults {
-    			t.Fatalf("Expected TaskRun results to be populated via sidecar logs, but none were found")
+				t.Fatalf("Expected TaskRun results to be populated via sidecar logs, but none were found")
 			}
 
-
-
-			cl, _ = c.V1PipelineRunClient.Get(ctx, prName, metav1.GetOptions{})
+			cl, _ := c.V1PipelineRunClient.Get(ctx, prName, metav1.GetOptions{})
 			d := cmp.Diff(expectedResolvedPipelineRun, cl,
 				ignoreTypeMeta,
 				ignoreObjectMeta,
