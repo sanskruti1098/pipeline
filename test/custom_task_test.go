@@ -15,7 +15,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
+import "os"
 package test
 
 import (
@@ -386,23 +386,34 @@ spec:
 func applyV1Beta1Controller(t *testing.T) {
 	t.Helper()
 	t.Log("Creating Wait v1beta1.CustomRun Custom Task Controller...")
-	cmd := exec.Command("ko", "apply", "--platform", "linux/amd64,linux/arm64,linux/s390x,linux/ppc64le", "-f", "./config/controller.yaml")
+
+	cmd := exec.Command("ko", "apply",
+		"--platform", "linux/amd64,linux/arm64,linux/s390x,linux/ppc64le",
+		"-f", "./config/controller.yaml",
+	)
 	cmd.Dir = betaWaitTaskDir
+
+	// added here
+	cmd.Env = append(os.Environ(), "KO_DOCKER_REPO=ko.local")
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Failed to create Wait Custom Task Controller: %s, Output: %s", err, out)
 	}
 
-	// Wait for the controller deployment to be ready before running tests.
-	// This prevents race conditions where tests create CustomRuns before the
-	// controller is ready to reconcile them.
 	t.Log("Waiting for Wait Custom Task Controller deployment to be ready...")
-	cmd = exec.CommandContext(context.Background(), "kubectl", "rollout", "status", "deployment/wait-task-controller", "-n", "wait-task-beta", "--timeout=60s")
+	cmd = exec.CommandContext(context.Background(),
+		"kubectl", "rollout", "status",
+		"deployment/wait-task-controller",
+		"-n", "wait-task-beta",
+		"--timeout=60s",
+	)
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Failed to wait for Wait Custom Task Controller deployment: %s, Output: %s", err, out)
 	}
 }
+
 
 func cleanUpV1beta1Controller(t *testing.T) {
 	t.Helper()
