@@ -15,12 +15,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-import "os"
 package test
 
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -387,13 +387,19 @@ func applyV1Beta1Controller(t *testing.T) {
 	t.Helper()
 	t.Log("Creating Wait v1beta1.CustomRun Custom Task Controller...")
 
-	// Build controller image (no push, just print image ref)
+	// 1️⃣ Build controller image (LOCAL ONLY)
 	cmd := exec.Command("ko", "build",
 		"--platform=linux/amd64,linux/arm64,linux/s390x,linux/ppc64le",
 		"--bare",
 		"./cmd/controller",
 	)
 	cmd.Dir = betaWaitTaskDir
+
+	// ⭐ THIS prevents Artifactory push
+	cmd.Env = append(os.Environ(),
+		"KO_DOCKER_REPO=ko.local",
+		"KO_SKIP_DIRTY_CHECK=true",
+	)
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -403,7 +409,7 @@ func applyV1Beta1Controller(t *testing.T) {
 	image := strings.TrimSpace(string(out))
 	t.Logf("Built controller image: %s", image)
 
-	// Patch YAML with built image
+	// 2️⃣ Patch YAML with built image
 	patchCmd := exec.Command("sed", "-i",
 		fmt.Sprintf("s|ko://.*/cmd/controller|%s|g", image),
 		"./config/controller.yaml",
@@ -413,13 +419,14 @@ func applyV1Beta1Controller(t *testing.T) {
 		t.Fatalf("Failed to patch controller.yaml: %s, Output: %s", err, out)
 	}
 
-	// Apply YAML normally (no ko loader involved)
+	// 3️⃣ Apply normally
 	applyCmd := exec.Command("kubectl", "apply", "-f", "./config/controller.yaml")
 	applyCmd.Dir = betaWaitTaskDir
 	if out, err := applyCmd.CombinedOutput(); err != nil {
 		t.Fatalf("Failed to apply controller.yaml: %s, Output: %s", err, out)
 	}
 }
+
 
 
 func cleanUpV1beta1Controller(t *testing.T) {
