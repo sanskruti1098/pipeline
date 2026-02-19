@@ -387,30 +387,37 @@ func applyV1Beta1Controller(t *testing.T) {
 	t.Helper()
 	t.Log("Creating Wait v1beta1.CustomRun Custom Task Controller...")
 
-	cmd := exec.Command("ko", "apply",
-		"--platform", "linux/amd64,linux/arm64,linux/s390x,linux/ppc64le",
-		"-f", "./config/controller.yaml",
+	// Build controller image (no push, just print image ref)
+	cmd := exec.Command("ko", "build",
+		"--platform=linux/amd64,linux/arm64,linux/s390x,linux/ppc64le",
+		"--bare",
+		"./cmd/controller",
 	)
 	cmd.Dir = betaWaitTaskDir
 
-	// added here
-	cmd.Env = append(os.Environ(), "KO_DOCKER_REPO=ko.local")
-
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("Failed to create Wait Custom Task Controller: %s, Output: %s", err, out)
+		t.Fatalf("Failed to build Wait controller image: %s, Output: %s", err, out)
 	}
 
-	t.Log("Waiting for Wait Custom Task Controller deployment to be ready...")
-	cmd = exec.CommandContext(context.Background(),
-		"kubectl", "rollout", "status",
-		"deployment/wait-task-controller",
-		"-n", "wait-task-beta",
-		"--timeout=60s",
+	image := strings.TrimSpace(string(out))
+	t.Logf("Built controller image: %s", image)
+
+	// Patch YAML with built image
+	patchCmd := exec.Command("sed", "-i",
+		fmt.Sprintf("s|ko://.*/cmd/controller|%s|g", image),
+		"./config/controller.yaml",
 	)
-	out, err = cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to wait for Wait Custom Task Controller deployment: %s, Output: %s", err, out)
+	patchCmd.Dir = betaWaitTaskDir
+	if out, err := patchCmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to patch controller.yaml: %s, Output: %s", err, out)
+	}
+
+	// Apply YAML normally (no ko loader involved)
+	applyCmd := exec.Command("kubectl", "apply", "-f", "./config/controller.yaml")
+	applyCmd.Dir = betaWaitTaskDir
+	if out, err := applyCmd.CombinedOutput(); err != nil {
+		t.Fatalf("Failed to apply controller.yaml: %s, Output: %s", err, out)
 	}
 }
 
