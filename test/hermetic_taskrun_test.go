@@ -93,7 +93,7 @@ metadata:
 spec:
   taskSpec:
     steps:
-    - image: gcr.io/cloud-builders/curl
+    - image: curlimages/curl
       name: access-network
       
       script: |-
@@ -117,7 +117,7 @@ metadata:
 spec:
   taskSpec:
     steps:
-    - image: gcr.io/cloud-builders/curl
+    - image: curlimages/curl
       name: curl
       
       script: |-
